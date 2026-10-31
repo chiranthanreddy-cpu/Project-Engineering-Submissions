@@ -1,0 +1,23 @@
+services:
+  - type: web
+    name: ledgerapp-api
+    runtime: node
+    plan: free
+    buildCommand: npm install
+    startCommand: npm start
+    healthCheckPath: /
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: DB_URL
+        fromDatabase:
+          name: ledgerapp-db
+          property: connectionString
+      - key: ADMIN_API_KEY
+        generateValue: true
+
+databases:
+  - name: ledgerapp-db
+    plan: free
+    databaseName: ledgerapp
+    user: ledgeruser
