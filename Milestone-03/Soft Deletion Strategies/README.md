@@ -1,6 +1,6 @@
 # LedgerApp - Financial Record Management API
 
-Welcome to LedgerApp! This is a core financial API designed to manage user identities, financial accounts, transaction ledgers, and temporary sessions with enterprise-grade auditability and soft deletion strategies.
+Welcome to LedgerApp! This is a core financial API designed to manage user identities, financial accounts, and transaction history with enterprise-grade auditability, partial active indexing, and soft deletion strategies.
 
 ---
 
@@ -27,12 +27,12 @@ Welcome to LedgerApp! This is a core financial API designed to manage user ident
    ```bash
    psql -d ledgerapp -f schema.sql
    ```
-   *(Or apply `migration.sql` if migrating an existing instance without dropping existing data).*
+   *(Or apply `migration.sql` if migrating an existing database instance without dropping data).*
 
 4. Configure environment variables:
    - Create a `.env` file based on `.env.example`.
    - Set `DB_URL` with your database credentials.
-   - (Optional) Set `ADMIN_API_KEY` for authorized audit inspection endpoints (defaults to `ledgerapp-admin-secret-key`).
+   - Set `ADMIN_API_KEY` with a strong secret required for authorized audit inspection endpoints (missing configuration fails closed).
 
 5. Start the application:
    ```bash
@@ -43,7 +43,7 @@ Welcome to LedgerApp! This is a core financial API designed to manage user ident
 
 ## 🧪 Testing & Verification
 
-The project includes an end-to-end integration test suite verifying all soft deletion flows, exclusion logic, partial indexes, relationship safety, temporary data hard deletes, and admin authorization.
+The project includes an in-memory integration test suite (`test.js`) utilizing `pg-mem` and `supertest` for deterministic local/CI test execution without requiring an external PostgreSQL daemon.
 
 Run the test suite:
 ```bash
@@ -52,13 +52,18 @@ node test.js
 *(or `npm test`)*
 
 The test suite validates:
-- Schema initialization and partial index definitions (`idx_users_active`, `idx_accounts_active`, `idx_transactions_active`).
+- Schema initialization and partial active index definitions (`idx_users_active`, `idx_accounts_active`, `idx_transactions_active`).
 - Soft deletion on Users (`DELETE /users/:id` sets `deleted_at = NOW()` and keeps the row intact).
 - Normal query exclusion (`GET /users` and `GET /users/:id` filter `WHERE deleted_at IS NULL`).
+- Relational cascading soft-deletes (soft-deleting a user also cascades soft deletion to their accounts and transactions).
+- Relationship integrity guards (preventing creation of accounts or transactions under soft-deleted parents).
 - Repeated soft deletion edge cases (returns 404 for already deleted or missing records).
-- Cascading relationship guards (cannot create accounts or transactions under soft-deleted parents).
-- Hard deletion verification for exempted temporary data (`DELETE /sessions/:token` permanently erases tokens).
-- Admin / Audit endpoints (`GET /audit/*` rejects unauthorized requests with 403 Forbidden and returns soft-deleted records when authorized via `x-admin-role: admin`, `x-admin-key`, or `Authorization: Bearer <key>`).
+- Strict Admin Authorization:
+  - Missing server `ADMIN_API_KEY` configuration fails closed (HTTP 500).
+  - Unauthenticated clients (no secret) receive HTTP 401 Unauthorized.
+  - Clients attempting unverified role headers (e.g. `x-admin-role: admin`) without a secret receive HTTP 401/403.
+  - Invalid secrets receive HTTP 403 Forbidden.
+  - Authorized admin requests (`x-admin-key: <secret>` or `Authorization: Bearer <secret>`) successfully inspect soft-deleted records (`WHERE deleted_at IS NOT NULL`).
 
 ---
 
@@ -68,40 +73,34 @@ The test suite validates:
 - `GET /users`: List all active users (`WHERE deleted_at IS NULL`).
 - `GET /users/:id`: Get active user details by ID.
 - `POST /users`: Create a new user (`deleted_at = NULL`).
-- `DELETE /users/:id`: **Soft-delete** user (sets `deleted_at = NOW()`).
+- `DELETE /users/:id`: **Soft-delete** user (sets `deleted_at = NOW()` and cascades soft-delete to accounts and transactions).
 
 ### 💳 Accounts
-- `GET /accounts`: List all active bank accounts (`WHERE deleted_at IS NULL`).
+- `GET /accounts`: List all active bank accounts (`WHERE deleted_at IS NULL` and user active).
 - `GET /accounts/user/:userId`: List active accounts for an active user.
 - `POST /accounts`: Create a new checking/savings account (validates active user).
-- `DELETE /accounts/:id`: **Soft-delete** account (sets `deleted_at = NOW()`).
+- `DELETE /accounts/:id`: **Soft-delete** account (sets `deleted_at = NOW()` and cascades soft-delete to transactions).
 
 ### 💸 Transactions
-- `GET /transactions`: List all active transactions (`WHERE deleted_at IS NULL`).
+- `GET /transactions`: List all active transactions (`WHERE deleted_at IS NULL` and account/user active).
 - `GET /transactions/account/:accountId`: List active transactions for an active account.
 - `POST /transactions`: Post a new transaction (validates active account).
 - `DELETE /transactions/:id`: **Soft-delete** transaction (sets `deleted_at = NOW()`).
 
-### 🔑 Sessions (Temporary Data - Hard Deletion)
-- `GET /sessions`: List active session tokens.
-- `GET /sessions/:token`: Get session details by token.
-- `POST /sessions`: Create a new ephemeral session token.
-- `DELETE /sessions/:token`: **Hard-delete** session token permanently from the database.
-
-### 🛡 Audit & Admin (Authorized Access Only)
-*Requires header: `x-admin-role: admin` OR `x-admin-key: ledgerapp-admin-secret-key` OR `Authorization: Bearer ledgerapp-admin-secret-key`.*
+### 🛡 Audit & Admin (Authorized Compliance Access Only)
+*Requires header: `x-admin-key: <ADMIN_API_KEY>` OR `Authorization: Bearer <ADMIN_API_KEY>`.*
 - `GET /audit/summary`: Summary count of active vs soft-deleted records across all tables.
 - `GET /audit/users`: List all soft-deleted users (`WHERE deleted_at IS NOT NULL`).
 - `GET /audit/accounts`: List all soft-deleted accounts (`WHERE deleted_at IS NOT NULL`).
 - `GET /audit/transactions`: List all soft-deleted transactions (`WHERE deleted_at IS NOT NULL`).
-- `GET /audit/all`: Complete audit view of all soft-deleted entities for compliance reviews.
+- `GET /audit/all`: Complete audit view of all soft-deleted entities for regulatory compliance reviews.
 
 ---
 
 ## 🏗 Architecture & Soft Deletion Details
 
 ### 1. Schema Design
-Every soft-deleted table includes `deleted_at TIMESTAMP WITH TIME ZONE DEFAULT NULL`.
+Every table includes `deleted_at TIMESTAMP WITH TIME ZONE DEFAULT NULL`.
 - `NULL` denotes an active, operational record.
 - A valid timestamp denotes a soft-deleted record, preserving exact deletion time for forensic analysis.
 
@@ -124,4 +123,4 @@ These indexes restrict B-Tree size strictly to active records, saving cache memo
 - **Node.js + Express**
 - **PostgreSQL** with raw SQL execution via `pg` (node-postgres)
 - **Partial B-Tree Indexes** for active record query acceleration
-- **In-Memory Testing**: `pg-mem` and `supertest` for end-to-end automated verification
+- **Testing**: In-memory PostgreSQL emulation via `pg-mem` and HTTP assertions via `supertest`

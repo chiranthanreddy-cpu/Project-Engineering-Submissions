@@ -5,7 +5,6 @@ require('dotenv').config();
 const usersRoute = require('./routes/users');
 const accountsRoute = require('./routes/accounts');
 const transactionsRoute = require('./routes/transactions');
-const sessionsRoute = require('./routes/sessions');
 const auditRoute = require('./routes/audit');
 
 const app = express();
@@ -19,7 +18,6 @@ app.use(bodyParser.urlencoded({ extended: true }));
 app.use('/users', usersRoute);
 app.use('/accounts', accountsRoute);
 app.use('/transactions', transactionsRoute);
-app.use('/sessions', sessionsRoute);
 app.use('/audit', auditRoute);
 
 // Simple health check endpoint

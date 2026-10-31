@@ -2,11 +2,15 @@ const express = require('express');
 const router = express.Router();
 const db = require('../db');
 
-// GET all active accounts in the system (excludes soft-deleted accounts)
+// GET all active accounts in the system (excludes soft-deleted accounts and accounts of soft-deleted users)
 router.get('/', async (req, res) => {
   try {
     const { rows } = await db.query(
-      'SELECT id, user_id, account_type, balance, created_at, deleted_at FROM accounts WHERE deleted_at IS NULL ORDER BY id ASC'
+      `SELECT a.id, a.user_id, a.account_type, a.balance, a.created_at, a.deleted_at 
+       FROM accounts a
+       JOIN users u ON a.user_id = u.id
+       WHERE a.deleted_at IS NULL AND u.deleted_at IS NULL 
+       ORDER BY a.id ASC`
     );
     res.json(rows);
   } catch (err) {
@@ -59,7 +63,7 @@ router.post('/', async (req, res) => {
   }
 });
 
-// SOFT DELETE single account from the system (sets deleted_at = NOW())
+// SOFT DELETE single account from the system (sets deleted_at = NOW() and cascades to child transactions)
 router.delete('/:id', async (req, res) => {
   try {
     // Individual soft-delete update using deleted_at = NOW()
@@ -71,6 +75,12 @@ router.delete('/:id', async (req, res) => {
     if (rowCount === 0) {
       return res.status(404).json({ error: 'Account not found' });
     }
+
+    // Cascade soft deletion to transactions linked to this account
+    await db.query(
+      'UPDATE transactions SET deleted_at = NOW() WHERE account_id = $1 AND deleted_at IS NULL',
+      [req.params.id]
+    );
 
     // Preserving existing response message for API consumer compatibility
     res.json({ message: 'Account permanently deleted from LedgerApp' });

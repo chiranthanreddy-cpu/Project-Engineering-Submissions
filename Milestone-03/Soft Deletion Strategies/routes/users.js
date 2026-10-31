@@ -44,7 +44,7 @@ router.post('/', async (req, res) => {
   }
 });
 
-// SOFT DELETE user from the system (sets deleted_at = NOW())
+// SOFT DELETE user from the system (sets deleted_at = NOW() and cascades to child accounts/transactions)
 router.delete('/:id', async (req, res) => {
   try {
     // Individual soft-delete update using deleted_at = NOW()
@@ -56,6 +56,20 @@ router.delete('/:id', async (req, res) => {
     if (rowCount === 0) {
       return res.status(404).json({ error: 'User not found' });
     }
+
+    // Cascade soft deletion to user's accounts to maintain relational consistency
+    await db.query(
+      'UPDATE accounts SET deleted_at = NOW() WHERE user_id = $1 AND deleted_at IS NULL',
+      [req.params.id]
+    );
+
+    // Cascade soft deletion to transactions linked to those accounts
+    await db.query(
+      `UPDATE transactions SET deleted_at = NOW() 
+       WHERE account_id IN (SELECT id FROM accounts WHERE user_id = $1) 
+         AND deleted_at IS NULL`,
+      [req.params.id]
+    );
 
     // Preserving existing response message for API consumer compatibility
     res.json({ message: 'User permanently deleted from LedgerApp' });

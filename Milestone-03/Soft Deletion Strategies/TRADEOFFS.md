@@ -18,14 +18,16 @@ Financial applications frequently encounter disputes, duplicate transaction char
 
 ---
 
-## 2. Operations & Records That Must Remain Hard-Deleted
+## 2. Architectural Boundaries: What Must Soft-Delete vs. What Should Remain Hard-Deleted
 
-While core financial data demands soft deletion, certain categories of application data **must remain hard-deleted** for technical, security, and regulatory reasons:
+In LedgerApp, the domain entities are strictly financial: `users`, `accounts`, and `transactions`. Because every one of these entities carries legal, financial, and regulatory compliance obligations, **all three core tables must implement soft deletion**.
 
-| Data Category | Technical Reason | Security / Regulatory Reason | Target Strategy |
+However, in an expanded production system, auxiliary temporary data must remain eligible for **hard deletion**. Artificial tables must not be bolted onto core financial ledgers merely to demonstrate deletion; rather, the distinction is architectural:
+
+| Data Category | Technical Reason for Hard Deletion | Security / Regulatory Reason | Target Strategy |
 |---|---|---|---|
-| **User Sessions & Refresh Tokens** (`sessions`) | Retaining expired tokens generates massive table bloat and slows down auth queries. Millions of daily logins would saturate memory and indexes. | **Security hygiene**: Storing invalid/expired session tokens indefinitely expands the attack surface for credential stuffing, token replay, and token leakage in database dumps. | **Hard Delete (`DELETE FROM sessions WHERE token = $1`)** upon logout or expiration. |
-| **Idempotency Keys & Request Caches** | Short-lived deduplication keys prevent duplicate charge requests within a brief window (e.g., 5–15 minutes). After expiry, they serve zero business value. | Table growth would quickly degrade write latency on high-throughput payment processing APIs. | **Hard Delete / TTL Expiry**. |
+| **User Sessions & Auth Tokens** | Retaining expired tokens generates massive table bloat and slows down auth queries. Millions of daily logins would saturate memory and indexes. | **Security hygiene**: Storing invalid/expired session tokens indefinitely expands the attack surface for credential stuffing, token replay, and token leakage in database dumps. | **Hard Delete (`DELETE FROM sessions WHERE token = $1`)** upon logout or expiration. |
+| **Idempotency Keys & Request Deduplication Locks** | Short-lived deduplication keys prevent duplicate charge requests within a brief window (e.g., 5–15 minutes). After expiry, they serve zero business value. | Table growth would quickly degrade write latency on high-throughput payment processing APIs. | **Hard Delete / TTL Expiry**. |
 | **One-Time Passwords (OTPs) & Password Reset Nonces** | Ephemeral secrets with a typical TTL of 5–10 minutes. | **Defense-in-depth**: Prevent brute-force attempts and eliminate stale secrets from database persistence. | **Immediate Hard Delete** upon verification or expiration. |
 | **GDPR Non-Financial PII Purge** | Retaining non-financial personal data beyond lawful processing limits violates data minimization principles. | **GDPR Article 17 ("Right to Erasure")**: Where not exempted by statutory financial retention laws (e.g. marketing preferences, temporary device tracking), data must be physically or cryptographically purged. | **Hard Delete / Anonymization Batch Purge**. |
 

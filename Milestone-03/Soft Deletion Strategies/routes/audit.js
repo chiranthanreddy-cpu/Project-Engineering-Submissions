@@ -2,25 +2,39 @@ const express = require('express');
 const router = express.Router();
 const db = require('../db');
 
-// Middleware to authenticate and authorize admin/auditor access
+// Secure middleware to authenticate and authorize admin/auditor access
 const requireAdminAuth = (req, res, next) => {
-  const adminRole = req.headers['x-admin-role'];
-  const adminKey = req.headers['x-admin-key'];
-  const authHeader = req.headers['authorization'];
+  const configuredSecret = process.env.ADMIN_API_KEY;
 
-  const expectedKey = process.env.ADMIN_API_KEY || 'ledgerapp-admin-secret-key';
-
-  const isRoleAdmin = adminRole === 'admin';
-  const isKeyValid = adminKey === expectedKey;
-  const isBearerValid = authHeader === `Bearer ${expectedKey}`;
-
-  if (isRoleAdmin || isKeyValid || isBearerValid) {
-    return next();
+  // Fail closed: If no secret is configured on the server, deny access immediately
+  if (!configuredSecret || typeof configuredSecret !== 'string' || configuredSecret.trim().length === 0) {
+    console.error('Audit authorization failure: ADMIN_API_KEY is not configured on the server.');
+    return res.status(500).json({
+      error: 'Server configuration error: Admin authentication is not configured',
+    });
   }
 
-  return res.status(403).json({
-    error: 'Forbidden: Admin authorization required to access audit records',
-  });
+  // Retrieve token from Authorization header or x-admin-key header
+  // Note: Arbitrary unverified role headers (e.g., x-admin-role) are strictly rejected
+  const adminKeyHeader = req.headers['x-admin-key'];
+  const authHeader = req.headers['authorization'];
+  const bearerToken = authHeader && authHeader.startsWith('Bearer ') ? authHeader.slice(7) : null;
+
+  const suppliedSecret = adminKeyHeader || bearerToken;
+
+  if (!suppliedSecret) {
+    return res.status(401).json({
+      error: 'Unauthorized: Admin authentication token required to access audit records',
+    });
+  }
+
+  if (suppliedSecret !== configuredSecret) {
+    return res.status(403).json({
+      error: 'Forbidden: Invalid admin credentials',
+    });
+  }
+
+  return next();
 };
 
 // Apply admin authorization to all audit routes

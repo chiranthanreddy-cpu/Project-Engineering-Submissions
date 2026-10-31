@@ -1,5 +1,4 @@
 -- Drop tables if they exist to start fresh
-DROP TABLE IF EXISTS sessions;
 DROP TABLE IF EXISTS transactions;
 DROP TABLE IF EXISTS accounts;
 DROP TABLE IF EXISTS users;
@@ -32,15 +31,6 @@ CREATE TABLE transactions (
     description TEXT,
     created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
     deleted_at TIMESTAMP WITH TIME ZONE DEFAULT NULL
-);
-
--- Sessions table stores temporary authentication tokens (exempt from soft delete; hard-deleted upon logout/expiry)
-CREATE TABLE sessions (
-    id SERIAL PRIMARY KEY,
-    user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
-    token VARCHAR(255) UNIQUE NOT NULL,
-    expires_at TIMESTAMP WITH TIME ZONE NOT NULL,
-    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
 );
 
 -- Partial indexes for active records to optimize reads and filter deleted records

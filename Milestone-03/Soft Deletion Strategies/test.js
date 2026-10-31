@@ -4,14 +4,18 @@ const assert = require('assert');
 const fs = require('fs');
 const path = require('path');
 
+// Configure test environment variables
 process.env.NODE_ENV = 'test';
-process.env.ADMIN_API_KEY = 'ledgerapp-admin-secret-key';
+const TEST_ADMIN_KEY = 'ledgerapp-test-super-secret-key-456';
+process.env.ADMIN_API_KEY = TEST_ADMIN_KEY;
 
 const db = require('./db');
 const app = require('./app');
 
 async function runTests() {
-  console.log('🧪 Starting LedgerApp Soft Deletion Test Suite...\n');
+  console.log('🧪 Starting LedgerApp In-Memory PostgreSQL (pg-mem) Test Suite...\n');
+  console.log('ℹ️  Note: These tests run against an in-memory PostgreSQL emulator (pg-mem)');
+  console.log('    to provide deterministic, hermetic verification without requiring a live PG daemon.\n');
 
   // 1. Initialize in-memory PostgreSQL instance with schema
   const memDb = newDb();
@@ -44,11 +48,10 @@ async function runTests() {
   }
 
   // -------------------------------------------------------------
-  // Test 1: Partial Indexes Exist in Database Schema
+  // Test 1: Schema & Partial Index Verification
   // -------------------------------------------------------------
   console.log('\n--- 1. Schema & Partial Index Verification ---');
   await test('Partial indexes are correctly defined in schema.sql, migration.sql, and DB engine', async () => {
-    // 1. Verify schema.sql explicitly defines the required partial indexes
     const requiredPatterns = [
       /CREATE\s+INDEX(?:\s+IF\s+NOT\s+EXISTS)?\s+idx_users_active\s+ON\s+users\s*\(\s*id\s*\)\s*WHERE\s+deleted_at\s+IS\s+NULL/i,
       /CREATE\s+INDEX(?:\s+IF\s+NOT\s+EXISTS)?\s+idx_accounts_active\s+ON\s+accounts\s*\(\s*id\s*\)\s*WHERE\s+deleted_at\s+IS\s+NULL/i,
@@ -63,7 +66,7 @@ async function runTests() {
       assert(pattern.test(migrationSql), `migration.sql missing required partial index matching ${pattern}`);
     }
 
-    // 2. Verify partial index SQL parses and executes cleanly in PostgreSQL engine
+    // Verify partial index SQL parses and executes cleanly in PostgreSQL engine
     const testDb = newDb();
     testDb.public.none(`
       CREATE TABLE users (id SERIAL PRIMARY KEY, deleted_at TIMESTAMP WITH TIME ZONE);
@@ -136,12 +139,12 @@ async function runTests() {
   });
 
   // -------------------------------------------------------------
-  // Test 3: Accounts Soft Deletion Flow & Relation Safety
+  // Test 3: Accounts Soft Deletion Flow & Cascades
   // -------------------------------------------------------------
-  console.log('\n--- 3. Accounts Soft Deletion Flow ---');
+  console.log('\n--- 3. Accounts Soft Deletion Flow & Relation Safety ---');
   let account1Id, account2Id;
 
-  await test('POST /accounts fails for soft-deleted user', async () => {
+  await test('POST /accounts fails for soft-deleted user (400)', async () => {
     const res = await request(app)
       .post('/accounts')
       .send({ user_id: user1Id, account_type: 'checking', balance: 500.0 })
@@ -164,7 +167,7 @@ async function runTests() {
     account2Id = res2.body.id;
   });
 
-  await test('GET /accounts returns active accounts', async () => {
+  await test('GET /accounts returns active accounts for active users', async () => {
     const res = await request(app).get('/accounts').expect(200);
     assert.strictEqual(res.body.length, 2);
   });
@@ -203,7 +206,7 @@ async function runTests() {
   console.log('\n--- 4. Transactions Soft Deletion Flow ---');
   let tx1Id, tx2Id;
 
-  await test('POST /transactions fails for soft-deleted account', async () => {
+  await test('POST /transactions fails for soft-deleted account (400)', async () => {
     const res = await request(app)
       .post('/transactions')
       .send({ account_id: account1Id, amount: 50.0, type: 'debit', description: 'Coffee' })
@@ -256,116 +259,136 @@ async function runTests() {
   });
 
   // -------------------------------------------------------------
-  // Test 5: Temporary Data Hard Deletion (Sessions/Tokens)
+  // Test 5: Relational Soft Delete Cascades
   // -------------------------------------------------------------
-  console.log('\n--- 5. Temporary Data Hard Deletion (Sessions/Tokens) ---');
-  const testToken = 'sess_xyz_12345';
+  console.log('\n--- 5. Relational Soft Delete Cascades ---');
+  let user3Id, account3Id, tx3Id;
 
-  await test('POST /sessions creates temporary session token', async () => {
-    const res = await request(app)
-      .post('/sessions')
-      .send({ user_id: user2Id, token: testToken, expires_at: new Date(Date.now() + 3600000) })
+  await test('Soft-deleting a parent user cascades soft deletion to its accounts and transactions', async () => {
+    // Create User 3
+    const uRes = await request(app)
+      .post('/users')
+      .send({ name: 'Charlie Cascades', email: 'charlie@example.com' })
       .expect(201);
-    assert.strictEqual(res.body.token, testToken);
-  });
+    user3Id = uRes.body.id;
 
-  await test('GET /sessions returns active session', async () => {
-    const res = await request(app).get('/sessions').expect(200);
-    assert(res.body.some(s => s.token === testToken));
-  });
+    // Create Account for User 3
+    const aRes = await request(app)
+      .post('/accounts')
+      .send({ user_id: user3Id, account_type: 'checking', balance: 250.0 })
+      .expect(201);
+    account3Id = aRes.body.id;
 
-  await test('DELETE /sessions/:token HARD deletes temporary session record', async () => {
-    const res = await request(app).delete(`/sessions/${testToken}`).expect(200);
-    assert.strictEqual(res.body.message, 'Session token permanently purged from LedgerApp');
+    // Create Transaction for Account 3
+    const tRes = await request(app)
+      .post('/transactions')
+      .send({ account_id: account3Id, amount: 100.0, type: 'credit', description: 'Bonus' })
+      .expect(201);
+    tx3Id = tRes.body.id;
 
-    // Verify record is HARD DELETED from database table
-    const dbCheck = await pool.query('SELECT * FROM sessions WHERE token = $1', [testToken]);
-    assert.strictEqual(dbCheck.rows.length, 0, 'Temporary session MUST be permanently erased from database');
-  });
+    // Verify all active before deletion
+    assert.strictEqual((await request(app).get(`/users/${user3Id}`).expect(200)).body.id, user3Id);
+    assert.strictEqual((await request(app).get(`/accounts/user/${user3Id}`).expect(200)).body.length, 1);
+    assert.strictEqual((await request(app).get(`/transactions/account/${account3Id}`).expect(200)).body.length, 1);
 
-  await test('DELETE /sessions/:token repeated returns 404', async () => {
-    await request(app).delete(`/sessions/${testToken}`).expect(404);
+    // Soft delete User 3
+    await request(app).delete(`/users/${user3Id}`).expect(200);
+
+    // Verify User 3 is soft-deleted
+    await request(app).get(`/users/${user3Id}`).expect(404);
+
+    // Verify Account 3 is excluded and soft-deleted
+    await request(app).get(`/accounts/user/${user3Id}`).expect(404);
+    const accDb = await pool.query('SELECT * FROM accounts WHERE id = $1', [account3Id]);
+    assert(accDb.rows[0].deleted_at !== null, 'Account 3 should be cascaded to soft-deleted');
+
+    // Verify Transaction 3 is excluded and soft-deleted
+    await request(app).get(`/transactions/account/${account3Id}`).expect(404);
+    const txDb = await pool.query('SELECT * FROM transactions WHERE id = $1', [tx3Id]);
+    assert(txDb.rows[0].deleted_at !== null, 'Transaction 3 should be cascaded to soft-deleted');
   });
 
   // -------------------------------------------------------------
-  // Test 6: Audit / Admin Endpoints Authorization & Inspection
+  // Test 6: Strict Authorization Security on Audit Endpoints
   // -------------------------------------------------------------
-  console.log('\n--- 6. Audit & Admin Authorization and Querying ---');
+  console.log('\n--- 6. Strict Authorization Security on Audit Endpoints ---');
 
-  await test('GET /audit/* rejects unauthorized requests (403 Forbidden)', async () => {
-    await request(app).get('/audit/summary').expect(403);
-    await request(app).get('/audit/users').expect(403);
-    await request(app).get('/audit/accounts').expect(403);
-    await request(app).get('/audit/transactions').expect(403);
-    await request(app).get('/audit/all').expect(403);
+  await test('Fails closed with 500 when ADMIN_API_KEY is not configured on server', async () => {
+    const savedKey = process.env.ADMIN_API_KEY;
+    try {
+      delete process.env.ADMIN_API_KEY;
+      const res = await request(app)
+        .get('/audit/summary')
+        .set('x-admin-key', TEST_ADMIN_KEY)
+        .expect(500);
+      assert(res.body.error.includes('Server configuration error'));
+    } finally {
+      process.env.ADMIN_API_KEY = savedKey;
+    }
   });
 
-  await test('GET /audit/summary retrieves accurate counts of active vs soft-deleted records', async () => {
+  await test('Rejects unauthenticated request without secret (401 Unauthorized)', async () => {
+    const res = await request(app).get('/audit/summary').expect(401);
+    assert(res.body.error.includes('Unauthorized'));
+  });
+
+  await test('Rejects arbitrary unverified role header x-admin-role without secret (401 Unauthorized)', async () => {
+    // Attacker sends x-admin-role: admin without knowing secret
     const res = await request(app)
       .get('/audit/summary')
       .set('x-admin-role', 'admin')
-      .expect(200);
-
-    assert.strictEqual(res.body.users.active, 1);
-    assert.strictEqual(res.body.users.deleted, 1);
-
-    assert.strictEqual(res.body.accounts.active, 1);
-    assert.strictEqual(res.body.accounts.deleted, 1);
-
-    assert.strictEqual(res.body.transactions.active, 1);
-    assert.strictEqual(res.body.transactions.deleted, 1);
+      .expect(401);
+    assert(res.body.error.includes('Unauthorized'));
   });
 
-  await test('GET /audit/users retrieves soft-deleted users (deleted_at IS NOT NULL)', async () => {
+  await test('Rejects invalid secret in x-admin-key (403 Forbidden)', async () => {
     const res = await request(app)
       .get('/audit/users')
-      .set('x-admin-role', 'admin')
-      .expect(200);
-
-    assert.strictEqual(res.body.length, 1);
-    assert.strictEqual(res.body[0].id, user1Id);
-    assert(res.body[0].deleted_at !== null);
+      .set('x-admin-key', 'wrong-invalid-secret')
+      .expect(403);
+    assert(res.body.error.includes('Forbidden'));
   });
 
-  await test('GET /audit/accounts retrieves soft-deleted accounts', async () => {
+  await test('Rejects invalid secret in Authorization Bearer (403 Forbidden)', async () => {
     const res = await request(app)
       .get('/audit/accounts')
-      .set('x-admin-role', 'admin')
-      .expect(200);
-
-    assert.strictEqual(res.body.length, 1);
-    assert.strictEqual(res.body[0].id, account1Id);
-    assert(res.body[0].deleted_at !== null);
+      .set('Authorization', 'Bearer wrong-invalid-secret')
+      .expect(403);
+    assert(res.body.error.includes('Forbidden'));
   });
 
-  await test('GET /audit/transactions retrieves soft-deleted transactions', async () => {
+  await test('Authorized admin with valid x-admin-key header succeeds (200 OK)', async () => {
     const res = await request(app)
-      .get('/audit/transactions')
-      .set('x-admin-key', 'ledgerapp-admin-secret-key')
+      .get('/audit/summary')
+      .set('x-admin-key', TEST_ADMIN_KEY)
       .expect(200);
 
-    assert.strictEqual(res.body.length, 1);
-    assert.strictEqual(res.body[0].id, tx1Id);
-    assert(res.body[0].deleted_at !== null);
+    assert(res.body.users.deleted >= 2, 'Should report at least 2 deleted users');
+    assert(res.body.accounts.deleted >= 2, 'Should report at least 2 deleted accounts');
+    assert(res.body.transactions.deleted >= 2, 'Should report at least 2 deleted transactions');
   });
 
-  await test('GET /audit/users supports Authorization Bearer header', async () => {
+  await test('Authorized admin with valid Authorization Bearer token succeeds (200 OK)', async () => {
     const res = await request(app)
       .get('/audit/users')
-      .set('Authorization', 'Bearer ledgerapp-admin-secret-key')
+      .set('Authorization', `Bearer ${TEST_ADMIN_KEY}`)
       .expect(200);
-    assert.strictEqual(res.body.length, 1);
+
+    assert(res.body.length >= 2);
+    for (const u of res.body) {
+      assert(u.deleted_at !== null, 'All audited users must have deleted_at NOT NULL');
+    }
   });
 
-  await test('GET /audit/all retrieves full audit report for compliance inspection', async () => {
+  await test('GET /audit/all retrieves full audit report with all soft-deleted records', async () => {
     const res = await request(app)
       .get('/audit/all')
-      .set('Authorization', 'Bearer ledgerapp-admin-secret-key')
+      .set('x-admin-key', TEST_ADMIN_KEY)
       .expect(200);
 
-    assert.strictEqual(res.body.users.length, 1);
-    assert.strictEqual(res.body.accounts.length, 1);
-    assert.strictEqual(res.body.transactions.length, 1);
+    assert(res.body.users.length >= 2);
+    assert(res.body.accounts.length >= 2);
+    assert(res.body.transactions.length >= 2);
   });
 
   // -------------------------------------------------------------

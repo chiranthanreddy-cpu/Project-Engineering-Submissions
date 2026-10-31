@@ -2,11 +2,16 @@ const express = require('express');
 const router = express.Router();
 const db = require('../db');
 
-// GET all active transactions in the system (excludes soft-deleted transactions)
+// GET all active transactions in the system (excludes soft-deleted transactions and transactions of soft-deleted accounts/users)
 router.get('/', async (req, res) => {
   try {
     const { rows } = await db.query(
-      'SELECT id, account_id, amount, type, description, created_at, deleted_at FROM transactions WHERE deleted_at IS NULL ORDER BY id ASC'
+      `SELECT t.id, t.account_id, t.amount, t.type, t.description, t.created_at, t.deleted_at 
+       FROM transactions t
+       JOIN accounts a ON t.account_id = a.id
+       JOIN users u ON a.user_id = u.id
+       WHERE t.deleted_at IS NULL AND a.deleted_at IS NULL AND u.deleted_at IS NULL 
+       ORDER BY t.id ASC`
     );
     res.json(rows);
   } catch (err) {
@@ -18,7 +23,10 @@ router.get('/', async (req, res) => {
 router.get('/account/:accountId', async (req, res) => {
   try {
     const accountCheck = await db.query(
-      'SELECT id FROM accounts WHERE id = $1 AND deleted_at IS NULL',
+      `SELECT a.id 
+       FROM accounts a
+       JOIN users u ON a.user_id = u.id
+       WHERE a.id = $1 AND a.deleted_at IS NULL AND u.deleted_at IS NULL`,
       [req.params.accountId]
     );
 
@@ -41,7 +49,10 @@ router.post('/', async (req, res) => {
   const { account_id, amount, type, description } = req.body;
   try {
     const accountCheck = await db.query(
-      'SELECT id FROM accounts WHERE id = $1 AND deleted_at IS NULL',
+      `SELECT a.id 
+       FROM accounts a
+       JOIN users u ON a.user_id = u.id
+       WHERE a.id = $1 AND a.deleted_at IS NULL AND u.deleted_at IS NULL`,
       [account_id]
     );
 
