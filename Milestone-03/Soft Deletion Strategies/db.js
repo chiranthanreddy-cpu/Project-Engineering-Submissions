@@ -2,7 +2,7 @@ const { Pool } = require('pg');
 require('dotenv').config();
 
 // Pool configuration using DB_URL from environment variables
-const pool = new Pool({
+let pool = new Pool({
   connectionString: process.env.DB_URL,
 });
 
@@ -14,4 +14,10 @@ pool.on('error', (err) => {
 module.exports = {
   // Direct execution Helper
   query: (text, params) => pool.query(text, params),
+  // Helper to retrieve the active pool
+  getPool: () => pool,
+  // Helper to swap pool for testing environments
+  setPool: (newPool) => {
+    pool = newPool;
+  },
 };
